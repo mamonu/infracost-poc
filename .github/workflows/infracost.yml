@@ -1,0 +1,92 @@
+name: Infracost PoC
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "infracost-poc/**"
+      - "**.tf"
+      - ".github/workflows/infracost.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  infracost:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR (head)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+      - name: Generate Infracost diff and comment on PR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          POC_DIR="infracost-poc"
+          BASE_DIR="/tmp/base-repo"
+
+          if [ ! -d "$POC_DIR" ]; then
+            echo "ERROR: '$POC_DIR' directory not found in PR branch."
+            exit 1
+          fi
+
+          echo "==> Preparing base branch checkout (origin/main)"
+          git fetch origin main:refs/remotes/origin/main
+          rm -rf "$BASE_DIR"
+          git worktree add --detach "$BASE_DIR" origin/main
+
+          echo "==> Terraform plan (BASE: origin/main)"
+          terraform -chdir="$BASE_DIR/$POC_DIR" init -input=false
+          terraform -chdir="$BASE_DIR/$POC_DIR" plan -input=false -out=tfplan
+          terraform -chdir="$BASE_DIR/$POC_DIR" show -json tfplan > /tmp/plan-base.json
+
+          echo "==> Terraform plan (HEAD: PR branch)"
+          terraform -chdir="$POC_DIR" init -input=false
+          terraform -chdir="$POC_DIR" plan -input=false -out=tfplan
+          terraform -chdir="$POC_DIR" show -json tfplan > /tmp/plan-head.json
+
+          echo "==> Infracost breakdown (BASE)"
+          infracost breakdown \
+            --path=/tmp/plan-base.json \
+            --format=json \
+            --out-file=/tmp/infracost-base.json
+
+          echo "==> Infracost breakdown (HEAD)"
+          infracost breakdown \
+            --path=/tmp/plan-head.json \
+            --format=json \
+            --out-file=/tmp/infracost-head.json
+
+          echo "==> Infracost diff"
+          infracost diff \
+            --path=/tmp/infracost-head.json \
+            --compare-to=/tmp/infracost-base.json \
+            --format=json \
+            --out-file=/tmp/infracost-diff.json
+
+          echo "==> Comment on PR (update existing comment if present)"
+          infracost comment github \
+            --path=/tmp/infracost-diff.json \
+            --repo="$GITHUB_REPOSITORY" \
+            --pull-request="${{ github.event.pull_request.number }}" \
+            --github-token="$GITHUB_TOKEN" \
+            --behavior=update
+
+          echo "==> Cleanup"
+          git worktree remove "$BASE_DIR" --force
