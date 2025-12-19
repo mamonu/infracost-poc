@@ -1,6 +1,3 @@
-Here’s a clean, **MoJ-style PoC README** you can drop straight into `README.md`. It explains *what*, *why*, and *how* without over-engineering.
-
----
 
 # Infracost GitHub Actions – Proof of Concept
 
